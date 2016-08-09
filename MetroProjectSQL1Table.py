@@ -19,11 +19,16 @@ def JSONfromMetro(trainString): #converts the string into a dictionary file
 	fixSlash=re.compile(r'\\') #this line and the next remove triple-slashes, which screw up the json module
 	fixedTrainString=fixSlash.sub('',trainString)
 	trainJSON=json.loads(fixedTrainString[2:-2]+"}") #slightly adjusts the string to put it in json form
-	return trainJSON['Trains']
+	if isinstance(trainJSON,dict) and 'Trains' in trainJSON.keys():
+         return trainJSON['Trains']
+	else:
+         return None
 
 def saveWMATASQL(trainData, engine): #saves the current WMATA data to open engine
 	import datetime, pandas as pd
         #the line below creates a table name starting with WMATA and then containing the date and time information, with each day/hour/minute/second taking two characters
+	if not isinstance(trainData, list):
+         return None
 	DTstring=str(datetime.datetime.now().month)+str(datetime.datetime.now().day).rjust(2,'0')+str(datetime.datetime.now().hour).rjust(2,'0')+str(datetime.datetime.now().minute).rjust(2,'0')+str(datetime.datetime.now().second).rjust(2,'0')
 	trainFrame=pd.DataFrame('-', index=range(len(trainData)), columns=['DT','Car','Loc','Lin','Des','Min','Gro']) #creates trainFrame, the DataFrame to send to the SQL server
 	for iter in range(len(trainData)): #for all the trains in trainData
@@ -47,6 +52,8 @@ def lineNextDF(line, destList, arrData):
         			lineStat.loc[rowName,station]=trains2consider.Lin.iloc[0].lower()+':'+trains2consider.Min.iloc[0]  #if the train is terminating early (at Grovesnor, Silver Spring or Mt Vernon), use lowercase
 			elif trains2consider.Des.iloc[0]=='E06':
         			lineStat.loc[rowName,station]='Yl:'+trains2consider.Min.iloc[0]
+			elif trains2consider.Des.iloc[0]=='A13':
+        			lineStat.loc[rowName,station]='Rd:'+trains2consider.Min.iloc[0]
 			else:
         			lineStat.loc[rowName,station]=trains2consider.Lin.iloc[0]+':'+trains2consider.Min.iloc[0] #otherwise use upper
 	return lineStat
@@ -75,7 +82,7 @@ def WMATAtableSQL(timeMin,intervalSec, surgeNum): #records for timeMin minutes, 
 	while time.time()<(startTime+60*timeMin): #runs for timeMin minutes
          stepStart=time.time()
          WMATAdf=saveWMATASQL(JSONfromMetro(getMetroStatus()),engine) #save the current train data and appends the name to tableList
-         if len(WMATAdf.index)>0: #if you got data back
+         if isinstance(WMATAdf,pd.DataFrame) and len(WMATAdf.index)>0: #if you got data back
              if isStart: #and it's the first row
                  allLN2NE=allLNtoNE(WMATAdf,surgeNum) #set allLNtoNE equal to the all LineNext to NE data
                  allLN2SW=allLNtoSW(WMATAdf,surgeNum) #set allLNtoSW equal to the all LineNext to SW data
@@ -176,7 +183,7 @@ def trainBuild(lineStat,startTime): #determines how long it took the train arriv
                  timeRow+=minDist[lineStat.columns[stationNum]][lineStat.columns[stationNum+1]]['weight'] #go down the number of rows recorded in minDist
              else:
                  timeRow+=2 #if the connection isn't in minDist, go down two rows
-         if (specTrain.loc[startTime,'Col'].islower() and lineStat.columns[stationNum] in ['A11','B08','E01','K04']) or (specTrain.loc[startTime,'Col']=='Yl' and lineStat.columns[stationNum]=='E05'):
+         if (specTrain.loc[startTime,'Col'].islower() and lineStat.columns[stationNum] in ['A11','B08','E01','K04']) or (specTrain.loc[startTime,'Col']=='Yl' and lineStat.columns[stationNum]=='E05') or (specTrain.loc[startTime,'Col']=='Rd' and lineStat.columns[stationNum]=='A13'):
              break
 	return [specTrain, skipRows]
 
@@ -266,7 +273,7 @@ def allTrainsNE(allLN2NE, surgeNum): #returns all trains heading toward the Nort
             ORtrains=trainTableIntermediate(allLN2NE.loc[:, wOEnd+SOLine+SOBLine+eOLine], ['K04']) #that start at Ballston (K04)
         else:
             ORtrains=trainTable(allLN2NE.loc[:, wOEnd+SOLine+SOBLine[:-1]])
-    RDtrains=trainTableMerge(trainTable(allLN2NE.loc[:, cRedLine]),trainTable(allLN2NE.loc[:, wRedEnd+cRedLine+eRedEnd])) #for red line trains, produce trains that run all the way and trains that run from Grovesnor to Silver Spring
+    RDtrains=trainTableIntermediate(wRedEnd+cRedLine+eRedEnd,['A13','A11']) #for red line trains, produce trains that run all the way and trains that run from Grovesnor to Silver Spring
     if surgeNum in [3,4]:
         return {'GR':GRtrains,'YL':YLtrains,'BL':BLtrains,'SV':SVtrains,'OR':ORtrains,'RD':RDtrains} #combine them all into a dictionary
     else:
@@ -291,7 +298,7 @@ def allTrainsSW(allLN2SW,surgeNum):  #returns all trains heading toward the Sout
     else:
         SVtrains=trainTable(allLN2SW.loc[:, (wSEnd+SOLine+SOBLine+SBLine)[::-1]]).loc[lambda df: df.Col=='SV'] #produce silver line trains
         ORtrains=trainTable(allLN2SW.loc[:, (wOEnd+SOLine+SOBLine+eOLine)[::-1]]) #produce orange line trains
-    RDtrains=trainTableMerge(trainTable(allLN2SW.loc[:, cRedLine[::-1]]),trainTable(allLN2SW.loc[:, (wRedEnd+cRedLine+eRedEnd)[::-1]])) #for red line trains, return trains that run all the way and trains that run from Grovesnor to Silver Spring
+    RDtrains=trainTableIntermediate((wRedEnd+cRedLine+eRedEnd)[::-1],['B08','B35']) #for red line trains, return trains that run all the way and trains that run from Grovesnor to Silver Spring
     if surgeNum in [3,4]:
         return {'GR':GRtrains,'YL':YLtrains,'BL':BLtrains,'SV':SVtrains,'OR':ORtrains,'RD':RDtrains} #combine them all into a dictionary
     else:
@@ -413,24 +420,28 @@ lineList={0:[wOEnd, wSEnd, SOLine, wBEnd, sYEnd, BYLine, BArlCem, SOBLine, eOLin
 3:[wOEnd, wSEnd, SOLine, BYLine[:3], BArlCem, SOBLine, eOLine, SBLine, sGLine, cGYLine, nGYEnd, wRedEnd, cRedLine, eRedEnd],
 4:[wOEnd, wSEnd, SOLine, ['C07'], BArlCem, SOBLine, eOLine, SBLine, sGLine, cGYLine, nGYEnd, wRedEnd, cRedLine, eRedEnd],
 5:[wOEnd, wSEnd, SOLine[:2], SOLine[2:], wBEnd, sYEnd, BYLine, BArlCem, SOBLine, eOLine, SBLine, sGLine, cGYLine, nGYEnd, wRedEnd, cRedLine, eRedEnd],
-6:[wOEnd, wSEnd, SOLine, wBEnd, sYEnd, BYLine, BArlCem, SOBLine, eOLine, SBLine, sGLine, cGYLine, nGYEnd, wRedEnd, cRedLine[:-5], cRedLine[-5:]+eRedEnd]}
+6:[wOEnd, wSEnd, SOLine, wBEnd, sYEnd, BYLine, BArlCem, SOBLine, eOLine, SBLine, sGLine, cGYLine, nGYEnd, wRedEnd, cRedLine[:-5], cRedLine[-5:]+eRedEnd],
+7:[wOEnd, wSEnd, SOLine, wBEnd, sYEnd, BYLine, BArlCem, SOBLine, eOLine, SBLine, sGLine, cGYLine, nGYEnd, wRedEnd, cRedLine, eRedEnd]}
 
 #these are the destinations along those lines. D13=New Car... G05=Largo E01=Mt Vernon E10=Greenbelt B08=Silver Spring B11=Glenmont    
-NEdestList={0:[['D13'],['G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13','G05'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
-1:[['D13'],['G05'],['D13','G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13','G05'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
+NEdestList={0:[['D13'],['G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
+1:[['D13'],['G05'],['D13','G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
 2:[['D06'],['D06'],['D06'],['C06','E10'],['E01','E06','E10'],['C06','E01','E06','E10'],['D06'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
 3:[['D13'],['G05'],['D13','G05'],['G05','E01','E06','E10'],['G05'],['G05','D13','G05'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E10'],['B11'],['B08','B11'],['B11']],
 4:[['D13'],['G05'],['D13','G05'],['G05','E01','E06','E10'],['G05'],['G05','D13','G05'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E10'],['B11'],['B08','B11'],['B11']],
 5:[['D13'],['G05'],['D13','G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13','G05'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
-6:[['D13'],['G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13','G05'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B35','B11'],['B11']]}
+6:[['D13'],['G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13','G05'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B35','B11'],['B11']],
+7:[['D13'],['G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']]}
 
-#these are the destinations along those lines. K08=Vienna N06=Wiehle C08=Pentagon City F11=Branch Ave A15=Shady Gr A11=Grovesnor
+#these are the destinations along those lines. K08=Vienna N06=Wiehle C08=Pentagon City F11=Branch Ave A15=Shady Gr A13=Twinbrook A11=Grovesnor
 SWdestList={0:[['K08'],['N06'],['K08','N06'],['J03'],['C15'],['C15','J03'],['J03'],['K08','J03','N06'],['K08'],['J03','N06'],['F11'],['F11', 'C15'],['F11', 'C15'],['A15'],['A11','A15'],['A15']],
 1:[['K08'],['N06'],['K08','N06'],['K08','K04','N06'],['J03'],['C15'],['C15','J03'],['J03'],['K08','K04','J03','N06'],['K08','K04'],['J03','K04','N06'],['F11'],['F11', 'C15'],['F11', 'C15'],['A15'],['A11','A15'],['A15']],
 2:[['K08'],['N06'],['K08','N06'],['J03'],['C15'],['C15','J03'],['K08','N06'],['F11'],['F11', 'C15'],['F11', 'C15'],['A15'],['A11','A15'],['A15']],
 3:[['K08'],['N06'],['K08','N06'],['C10'],['C10'],['K08','C10','N06'],['K08'],['C10','N06'],['F11'],['F11', 'C10'],['F11', 'C10'],['A15'],['A11','A15'],['A15']],
 4:[['K08'],['N06'],['K08','N06'],['C08'],['C08'],['K08','C08','N06'],['K08'],['C08','N06'],['F11'],['F11', 'C08'],['F11', 'C08'],['A15'],['A11','A15'],['A15']],
-5:[['K08'],['N06'],['K08','N06'],['K08','K04','N06'],['J03'],['C15'],['C15','J03'],['J03'],['K08','K04','J03','N06'],['K08','K04'],['J03','K04','N06'],['F11'],['F11', 'C15'],['F11', 'C15'],['A15'],['A11','A15'],['A15']]}
+5:[['K08'],['N06'],['K08','N06'],['K08','K04','N06'],['J03'],['C15'],['C15','J03'],['J03'],['K08','K04','J03','N06'],['K08','K04'],['J03','K04','N06'],['F11'],['F11', 'C15'],['F11', 'C15'],['A15'],['A11','A15'],['A15']],
+6:[['K08'],['N06'],['K08','N06'],['J03'],['C15'],['C15','J03'],['J03'],['K08','J03','N06'],['K08'],['J03','N06'],['F11'],['F11', 'C15'],['F11', 'C15'],['A15'],['A11','A15'],['A15']],
+7:[['K08'],['N06'],['K08','N06'],['J03'],['C15'],['C15','J03'],['J03'],['K08','J03','N06'],['K08'],['J03','N06'],['F11'],['F11', 'C15'],['F11', 'C15'],['A13','A15'],['A11','A13','A15'],['A13','A15']]}
 
 #minDist is used by trainBuild to determine the minimum time between stations, in case there are two trains on the same line boarding at adjacent stations
 minDist={'A01': {'A02': {'weight': 4}, 'B01': {'weight': 2}},
