@@ -273,7 +273,7 @@ def allTrainsNE(allLN2NE, surgeNum): #returns all trains heading toward the Nort
             ORtrains=trainTableIntermediate(allLN2NE.loc[:, wOEnd+SOLine+SOBLine+eOLine], ['K04']) #that start at Ballston (K04)
         else:
             ORtrains=trainTable(allLN2NE.loc[:, wOEnd+SOLine+SOBLine[:-1]])
-    RDtrains=trainTableIntermediate(wRedEnd+cRedLine+eRedEnd,['A13','A11']) #for red line trains, produce trains that run all the way and trains that run from Grovesnor to Silver Spring
+    RDtrains=trainTableIntermediate(allLN2NE.loc[:,wRedEnd+cRedLine+eRedEnd],['A13','A11']) #for red line trains, produce trains that run all the way and trains that run from Grovesnor to Silver Spring
     if surgeNum in [3,4]:
         return {'GR':GRtrains,'YL':YLtrains,'BL':BLtrains,'SV':SVtrains,'OR':ORtrains,'RD':RDtrains} #combine them all into a dictionary
     else:
@@ -298,7 +298,7 @@ def allTrainsSW(allLN2SW,surgeNum):  #returns all trains heading toward the Sout
     else:
         SVtrains=trainTable(allLN2SW.loc[:, (wSEnd+SOLine+SOBLine+SBLine)[::-1]]).loc[lambda df: df.Col=='SV'] #produce silver line trains
         ORtrains=trainTable(allLN2SW.loc[:, (wOEnd+SOLine+SOBLine+eOLine)[::-1]]) #produce orange line trains
-    RDtrains=trainTableIntermediate((wRedEnd+cRedLine+eRedEnd)[::-1],['B08','B35']) #for red line trains, return trains that run all the way and trains that run from Grovesnor to Silver Spring
+    RDtrains=trainTableIntermediate(allLN2SW.loc[:,(wRedEnd+cRedLine+eRedEnd)[::-1]],['B08','B35']) #for red line trains, return trains that run all the way and trains that run from Grovesnor to Silver Spring
     if surgeNum in [3,4]:
         return {'GR':GRtrains,'YL':YLtrains,'BL':BLtrains,'SV':SVtrains,'OR':ORtrains,'RD':RDtrains} #combine them all into a dictionary
     else:
@@ -393,7 +393,85 @@ def saveWMATAtrainSQL(timeList, duration, surgeNum): #saves the data from WMATA 
                 trains2SW[color].to_sql('SWtrains'+color+str(surgeNum), engine, if_exists='append')
         engine.connect().close()
     return
-    
+
+def trainData(line,destList,month,dayList): #gets all the train arrival data for a specific line for specific dates
+    import pandas as pd
+    isFirst=True
+    for day in dayList: #for all the days on the list
+        tempLN=lineNextTableSQL(line,str(month)+str(day).rjust(2,'0')+'045000',str(month)+str(day).rjust(2,'0')+'101000',destList) #form the lineNext for the morning
+        if isinstance(tempLN, pd.DataFrame) and len(tempLN.index)>200: #if there's more than 200 lines (over an hour) of data
+            if isFirst: #if it's the first time you found data
+                trains=trainTable(tempLN) #set the data to the trains of that set
+                isFirst=False
+            else: #if it's not the first time you found data
+                tempTrains=trainTable(tempLN)
+                trains=trains.append(tempTrains) #append the new data to the existing data
+        #the code below is the same concept, but for the afternoon
+        tempLN=lineNextTableSQL(line,str(month)+str(day).rjust(2,'0')+'165000',str(month)+str(day).rjust(2,'0')+'221000',destList) #form the lineNext for the afternoon
+        if isinstance(tempLN, pd.DataFrame) and len(tempLN.index)>200: #if there's more than 200 lines (over an hour) of data
+            if isFirst: #if it's the first time you found data
+                trains=trainTable(tempLN) #set the data to the trains of that set
+                isFirst=False
+            else: #if it's not the first time you found data
+                tempTrains=trainTable(tempLN)
+                trains=trains.append(tempTrains) #append the new data to the existing data
+    return trains
+
+def trainDataCSV(fileName): #converts data from a csv file into our standard format
+    import pandas as pd
+    rawData=pd.read_csv(fileName) #reads the file
+    return rawData.rename(index=pd.to_datetime(rawData.iloc[:,0])).drop(rawData.columns[0],axis=1) #renames the indices as the first column (converted into dateTimes), then drops the first column 
+
+def tripTimes(trainsData): #divides the train trips into thirds or quarters (aka legs) for the purpose of predictions
+    import pandas as pd
+    if len(trainsData.columns)>16: #if there are 16 or more stations, divide into quarters
+        legs=['quarter1','quarter2','quarter3','lastLeg']
+        legNums=[1,1+int((len(trainsData.columns)-1)/4),1+int((len(trainsData.columns)-1)/2),1+int(3*(len(trainsData.columns)-1)/4),len(trainsData.columns)-1]
+    else: #otherwise, divide them into thirds
+        legs=['third1','third2','lastLeg']
+        legNums=[1,1+int((len(trainsData.columns)-1)/3),1+int(2*(len(trainsData.columns)-1)/3),len(trainsData.columns)-1]
+    trips=pd.DataFrame(0,index=trainsData.index,columns=legs)
+    for row in trainsData.index: #for all the rows
+        for colNum in range(len(legs)): # and columns
+            trips.loc[row,legs[colNum]]=trainsData.loc[row,trainsData.columns[legNums[colNum+1]]]-trainsData.loc[row,trainsData.columns[legNums[colNum]]] #make the trip elements the difference between the station arrival data
+    return trips
+
+def headerTimes(trainsData): #turns the date/time information into numbers that machine learning tools can use
+    import pandas as pd
+    headerInfo=pd.DataFrame(0,index=trainsData.index,columns=['secSince5','weekday','evening'])
+    for time in trainsData.index:
+        headerInfo.loc[time,'weekday']=time.weekday()
+        if time.hour>11: #if it's past 11
+            headerInfo.loc[time,'evening']=1 #set evening to 1
+            headerInfo.loc[time,'secSince5']=(time-pd.to_datetime('2016-'+str(time.month)+'-'+str(time.day)+' 17:00')).seconds #set secSince5 to seconds since 5pm 
+        else:
+            headerInfo.loc[time,'secSince5']=(time-pd.to_datetime('2016-'+str(time.month)+'-'+str(time.day)+' 5:00')).seconds #set secSince5 to seconds since 5am
+    return headerInfo
+
+def trainTestSet(trainsData):
+    import pandas as pd, numpy as ny
+    tripTimeTable=tripTimes(trainsData)
+    tripB4Table=tripTimeTable.iloc[1:] #this line and the next few lines make a new table with the data from the trip before
+    tripB4Table=tripB4Table.rename_axis((lambda name:name+'B4'),axis='columns')
+    for rowNum in range(len(tripB4Table.index)):
+        for colNum in range(len(tripB4Table.columns)):
+            tripB4Table.iloc[rowNum,colNum]=tripTimeTable.iloc[rowNum,colNum]
+    colorSeries=trainsData.iloc[1:,0].map({'OR':0,'or':1,'SV':3,'BL':5,'yl':10,'Yl':11,'YL':12,'GR':15,'RD':20,'rd':21}) #remapping strings into numbers using the subjective numbering system I just made up
+    stations2NE=[] #list of stations in order from south/west to north/east
+    for line in lineList[0]:
+        stations2NE+=line
+    NEdirection=pd.Series(ny.sign(stations2NE.index(trainsData.columns[-1])-stations2NE.index(trainsData.columns[1])),index=trainsData.index, name='NEdirection') #NE direction is 1 if the train is headed to the north or east, -1 otherwise
+    testTable=pd.concat([colorSeries, NEdirection, headerTimes(trainsData).iloc[1:],tripB4Table,tripTimeTable.iloc[1:]],axis=1) #puts all the data together
+    return testTable[lambda df:df.lastLeg>0][lambda df:df.lastLegB4>0] #returns the table, removing the first train and trains that didn't complete their trip
+
+def scoreModel(testTable, col2test, modelFam,**args): #scores the model on its ability to predict col2test which is 1 for the last column, 2 for the second to last, etc.
+    from sklearn.cross_validation import train_test_split
+    X_train, X_test, y_train, y_test = train_test_split(testTable.iloc[:,:-col2test],testTable.iloc[:,-col2test], test_size=0.2) #splits up the data into training (80%) and testing (20%)
+    model=modelFam(**args)    
+    model.fit(X_train,y_train)
+#    print('Coefficients:',list(zip(testTable.columns[:-1], model.coef_.tolist()))) If you want to see the coefficients, remove the # from this line
+    print('Score:',model.score(X_test, y_test))
+
 #these are the lines to examine. lowercase letters (w,e,n,s,c) are the ordinal directions and central. Uppercase letters (O,S,B,Y,G) and Red are the lines
 wOEnd=['K07','K06']
 wSEnd=['N04','N03','N02','N01']
@@ -423,7 +501,7 @@ lineList={0:[wOEnd, wSEnd, SOLine, wBEnd, sYEnd, BYLine, BArlCem, SOBLine, eOLin
 6:[wOEnd, wSEnd, SOLine, wBEnd, sYEnd, BYLine, BArlCem, SOBLine, eOLine, SBLine, sGLine, cGYLine, nGYEnd, wRedEnd, cRedLine[:-5], cRedLine[-5:]+eRedEnd],
 7:[wOEnd, wSEnd, SOLine, wBEnd, sYEnd, BYLine, BArlCem, SOBLine, eOLine, SBLine, sGLine, cGYLine, nGYEnd, wRedEnd, cRedLine, eRedEnd]}
 
-#these are the destinations along those lines. D13=New Car... G05=Largo E01=Mt Vernon E10=Greenbelt B08=Silver Spring B11=Glenmont    
+#these are the destinations along those lines. D13=New Carrollton G05=Largo E01=Mt Vernon E10=Greenbelt B08=Silver Spring B11=Glenmont    
 NEdestList={0:[['D13'],['G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
 1:[['D13'],['G05'],['D13','G05'],['D13','G05'],['G05','E10'],['E01','E06','E10'],['G05','E01','E06','E10'],['G05'],['G05','D13'],['D13'],['G05'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
 2:[['D06'],['D06'],['D06'],['C06','E10'],['E01','E06','E10'],['C06','E01','E06','E10'],['D06'],['E10'],['E01','E06','E10'],['E06','E10'],['B11'],['B08','B11'],['B11']],
