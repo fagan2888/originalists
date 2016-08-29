@@ -422,23 +422,55 @@ def trainDataCSV(fileName): #converts data from a csv file into our standard for
     rawData=pd.read_csv(fileName) #reads the file
     return rawData.rename(index=pd.to_datetime(rawData.iloc[:,0])).drop(rawData.columns[0],axis=1) #renames the indices as the first column (converted into dateTimes), then drops the first column 
 
-def tripTimes(trainsData): #divides the train trips into thirds or quarters (aka legs) for the purpose of predictions
+def getRidersTrans(): #gets the ridership data and the station RTU/name translator
     import pandas as pd
-    if len(trainsData.columns)>16: #if there are 16 or more stations, divide into quarters
-        legs=['quarter1','quarter2','quarter3','lastLeg']
-        legNums=[1,1+int((len(trainsData.columns)-1)/4),1+int((len(trainsData.columns)-1)/2),1+int(3*(len(trainsData.columns)-1)/4),len(trainsData.columns)-1]
-    else: #otherwise, divide them into thirds
-        legs=['third1','third2','lastLeg']
-        legNums=[1,1+int((len(trainsData.columns)-1)/3),1+int(2*(len(trainsData.columns)-1)/3),len(trainsData.columns)-1]
-    trips=pd.DataFrame(0,index=trainsData.index,columns=legs)
+    from sqlalchemy import create_engine
+    engine = create_engine('postgresql+psycopg2://Original:tolistbtGU!@teamoriginal.ccc95gjlnnnc.us-east-1.rds.amazonaws.com:5432/SHSTUFF')
+    query1='SELECT * FROM "WMATARidershipExtract";'
+    ridershipDF=pd.read_sql(query1,engine)
+    query2='SELECT * FROM "RTUname";'
+    RTUname=pd.read_sql(query2,engine)
+    return [ridershipDF,RTUname.rename(index=RTUname.loc[:,'index']).drop('index',axis=1)]
+
+def dateQH(DTinput): #given a panda datetime, it outputs the date and quarter hour string for pulling ridership data
+    import pandas as pd
+    startMinute=DTinput.minute-DTinput.minute%15
+    if startMinute==45:
+        endHour=DTinput.hour%12+1
+        endMinute=0
+    else:
+        endHour=DTinput.hour%12
+        endMinute=startMinute+15
+    if DTinput.hour>11:
+        ampm=' PM'
+    else:
+        ampm=' AM'
+    QHstring=str(DTinput.hour%12)+':'+str(startMinute).rjust(2,'0')+ampm+' to '+str(endHour)+':'+str(endMinute).rjust(2,'0')+ampm
+    return [DTinput.date(),QHstring] #returns the date and quarter hour string, e.g., '5:00 PM to 5:15 PM'
+
+def tripTimes(trainsData, stationSplits): #divides the train trips for the purpose of predictions, splitting the trains at the stations in stationSplits
+    import pandas as pd
+    [ridershipDF,stationTrans]=getRidersTrans() #gets the ridership data and station name/translator
+    #the next few lines creates the columns: leg1riders, leg2riders,... lastLegRiders,leg1,leg2,...lastLeg
+    legList=['lastLeg']
+    riderList=['lastLegRiders']
+    for num in range(len(stationSplits),0,-1):
+        legList.insert(0,'leg'+str(num))
+        riderList.insert(0,'leg'+str(num)+'Riders')
+    trips=pd.DataFrame(0,index=trainsData.index,columns=riderList+legList)
+    #the stations are the first station, the station splits and the last station
+    stations=[trainsData.columns[1]]+stationSplits+[trainsData.columns[-1]]
     for row in trainsData.index: #for all the rows
-        for colNum in range(len(legs)): # and columns
-            trips.loc[row,legs[colNum]]=trainsData.loc[row,trainsData.columns[legNums[colNum+1]]]-trainsData.loc[row,trainsData.columns[legNums[colNum]]] #make the trip elements the difference between the station arrival data
+        [date,QHstring]=dateQH(row) #gets the date and quarter hour
+        for colNum in range(len(legList)): # and columns
+            trips.loc[row,legList[colNum]]=trainsData.loc[row,stations[colNum+1]]-trainsData.loc[row,stations[colNum]] #make the trip elements the difference between the station arrival data
+            legStations=(trainsData.loc[:,stations[colNum]:stations[colNum+1]]).columns #legStations are the station in this leg
+            trips.loc[row,legList[colNum]+'Riders']=ridershipDF[lambda df:df.station.isin(stationTrans.loc[legStations,'Station Name'])][lambda df:df.dateday==date][lambda df:df.hour_interval==QHstring].entries.sum()
     return trips
 
 def headerTimes(trainsData): #turns the date/time information into numbers that machine learning tools can use
     import pandas as pd
-    headerInfo=pd.DataFrame(0,index=trainsData.index,columns=['secSince5','weekday','evening'])
+    headerInfo=pd.DataFrame(0,index=trainsData.index,columns=['secSince5','weekday','evening','lastTrain','lastTrainColor'])
     for time in trainsData.index:
         headerInfo.loc[time,'weekday']=time.weekday()
         if time.hour>11: #if it's past 11
@@ -446,32 +478,134 @@ def headerTimes(trainsData): #turns the date/time information into numbers that 
             headerInfo.loc[time,'secSince5']=(time-pd.to_datetime('2016-'+str(time.month)+'-'+str(time.day)+' 17:00')).seconds #set secSince5 to seconds since 5pm 
         else:
             headerInfo.loc[time,'secSince5']=(time-pd.to_datetime('2016-'+str(time.month)+'-'+str(time.day)+' 5:00')).seconds #set secSince5 to seconds since 5am
+    for timeRow in range(1,len(headerInfo.index)):
+        headerInfo.iloc[timeRow,3]=(headerInfo.index[timeRow]-headerInfo.index[timeRow-1]).seconds
+    for color in trainsData.Col.value_counts().index:
+        if color>'-':
+            for timeRow in range(1,len(trainsData[lambda df:df.Col==color].index)):
+                    headerInfo.loc[trainsData[lambda df:df.Col==color].index[timeRow],'lastTrainColor']=(trainsData[lambda df:df.Col==color].index[timeRow]-trainsData[lambda df:df.Col==color].index[timeRow-1]).seconds
     return headerInfo
 
-def trainTestSet(trainsData):
+def trainTestSet(oldTrainsData, stationSplits):
     import pandas as pd, numpy as ny
-    tripTimeTable=tripTimes(trainsData)
+    trainsData=oldTrainsData.reset_index().drop_duplicates(subset='index', keep='last').set_index('index').sort_index() #removes duplicated index
+    tripTimeTable=tripTimes(trainsData, stationSplits)
+    headerInfo= headerTimes(trainsData)
+    secSince5B4=pd.Series(headerInfo.secSince5.iloc[:-1],index=trainsData.index[1:],name='secSince5B4')
     tripB4Table=tripTimeTable.iloc[1:] #this line and the next few lines make a new table with the data from the trip before
     tripB4Table=tripB4Table.rename_axis((lambda name:name+'B4'),axis='columns')
     for rowNum in range(len(tripB4Table.index)):
         for colNum in range(len(tripB4Table.columns)):
             tripB4Table.iloc[rowNum,colNum]=tripTimeTable.iloc[rowNum,colNum]
-    colorSeries=trainsData.iloc[1:,0].map({'OR':0,'or':1,'SV':3,'BL':5,'yl':10,'Yl':11,'YL':12,'GR':15,'RD':20,'rd':21}) #remapping strings into numbers using the subjective numbering system I just made up
+    colorSeries=trainsData.iloc[1:,0].map({'OR':1,'or':2,'SV':3,'BL':5,'yl':10,'Yl':11,'YL':12,'GR':15,'RD':20,'rd':21}) #remapping strings into numbers using the subjective numbering system I just made up
     stations2NE=[] #list of stations in order from south/west to north/east
     for line in lineList[0]:
         stations2NE+=line
-    NEdirection=pd.Series(ny.sign(stations2NE.index(trainsData.columns[-1])-stations2NE.index(trainsData.columns[1])),index=trainsData.index, name='NEdirection') #NE direction is 1 if the train is headed to the north or east, -1 otherwise
-    testTable=pd.concat([colorSeries, NEdirection, headerTimes(trainsData).iloc[1:],tripB4Table,tripTimeTable.iloc[1:]],axis=1) #puts all the data together
+    NEdirection=pd.Series(ny.sign(stations2NE.index(trainsData.columns[-1])-stations2NE.index(trainsData.columns[1])),index=trainsData.index, name='NEdirection') #NE direction is 1 if the train is headed to the north or east, -1 otherwise  
+    testTable=pd.concat([colorSeries, NEdirection, headerInfo.iloc[1:],secSince5B4,tripB4Table,tripTimeTable.iloc[1:]],axis=1) #puts all the data together
     return testTable[lambda df:df.lastLeg>0][lambda df:df.lastLegB4>0] #returns the table, removing the first train and trains that didn't complete their trip
-
+    
 def scoreModel(testTable, col2test, modelFam,**args): #scores the model on its ability to predict col2test which is 1 for the last column, 2 for the second to last, etc.
     from sklearn.cross_validation import train_test_split
     X_train, X_test, y_train, y_test = train_test_split(testTable.iloc[:,:-col2test],testTable.iloc[:,-col2test], test_size=0.2) #splits up the data into training (80%) and testing (20%)
     model=modelFam(**args)    
     model.fit(X_train,y_train)
-#    print('Coefficients:',list(zip(testTable.columns[:-1], model.coef_.tolist()))) If you want to see the coefficients, remove the # from this line
+    print('Coefficients:',list(zip(testTable.columns[:-1], model.coef_.tolist())))
     print('Score:',model.score(X_test, y_test))
+    for x in range(4):
+        X_train, X_test, y_train, y_test = train_test_split(testTable.iloc[:,:-col2test],testTable.iloc[:,-col2test], test_size=0.2) #splits up the data into training (80%) and testing (20%)
+        print('Score:',model.score(X_test, y_test))
 
+def newScoreModel(testTable, col2test, coefQues, modelFam,**args):
+    from sklearn.cross_validation import KFold
+    import numpy as np, pandas as pd
+    X_data = testTable.iloc[:,:-col2test]
+    y_data=testTable.iloc[:,-col2test]
+    model=modelFam(**args)    
+ 
+    scores = []
+    if coefQues:
+        coefficients=pd.DataFrame(0,index=['Average','Weight'],columns=testTable.columns[:-col2test])
+    folds = KFold(n = X_data.shape[0], n_folds=12, shuffle=True)
+    rowNum=0
+    for tidx, cidx in folds:
+        model.fit(X_data.iloc[tidx], y_data.iloc[tidx])
+        score = model.score(X_data.iloc[cidx], y_data.iloc[cidx])
+        scores.append(score)
+        if coefQues:
+            coefficients=coefficients.append(pd.DataFrame([model.coef_.tolist()],index=[str(rowNum)],columns=testTable.columns[:-col2test]))
+        rowNum+=1
+    print("Score: {}".format(np.mean(scores)))
+
+    if coefQues:
+        for column in coefficients.columns:
+            coefficients.loc['Average',column]=coefficients.loc['0':,column].mean()
+            coefficients.loc['Weight',column]=coefficients.loc['Average',column]*testTable.loc[:,column].std()
+        return (model,coefficients)
+    else:
+        return model
+        
+def newScoreModelalphaRange(testTable, col2test, modelFam,testRange):
+    bestValue=testRange[0]
+    bestScore=newScoreModel(testTable, col2test, False, modelFam,alpha=testRange[0])
+    for testValue in testRange[1:]:
+        curScore=newScoreModel(testTable, col2test, False, modelFam,alpha=testValue)
+        if curScore>bestScore:
+            bestValue=testValue
+            bestScore=curScore
+    return (bestValue,bestScore)
+
+#shows the percent of trains delayed on a given day and time, and judging the impact of an input (colNameInput)
+def countDelayPanel(testSet, colNameInput, colNameTest,threshold):
+    import pandas as pd
+    medianTime=testSet.loc[:,colNameTest].median()
+    splitList=testSet.loc[:,colNameInput].quantile([0,.1,.25,.5,.75,.9])
+    #one axis is the days of the week, morning/evening and all, another axis is the time divided into quarter hours, and the last is the level of delay (<10%,10%-25%,25%-50%,50%-75%,75%-90%,>90%)
+    delayPanel=pd.Panel(-1,items=['Mon morning','Mon evening','Tue morning','Tue evening','Wed morning','Wed evening','Thu morning','Thu evening','Fri morning','Fri evening', 'All','All morning','All evening'],major_axis=splitList,minor_axis=['5:00','5:15','5:30','5:45','6:00','6:15','6:30','6:45','7:00','7:15','7:30','7:45','8:00','8:15','8:30','8:45','9:00'])
+    #this sections compiles all trains for a given quarter hour, ignoring weekday and morning/evening    
+    for quarterHour in range(17):
+        #divides the data into quarter hours (15 minutes=900 seconds)
+        testQH=testSet[lambda df:df.secSince5>=900*quarterHour][lambda df:df.secSince5<900*(quarterHour+1)]
+        for splitNum in range(len(splitList)-1):
+            #numDelay is the number of delayed trains
+            numDelay=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[splitNum]][lambda df:df.loc[:,colNameInput]<splitList.iloc[splitNum+1]][lambda df:df.loc[:,colNameTest]>medianTime*threshold].index)
+            #numDelay is the number of total trains with the given inputs         
+            numTotal=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[splitNum]][lambda df:df.loc[:,colNameInput]<splitList.iloc[splitNum+1]].index)
+            if numTotal>0:
+                delayPanel.iloc[10,splitNum,quarterHour]=numDelay/numTotal #fraction of trains delayed for a given quarter hour, quantile of input
+        numDelay=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[-1]][lambda df:df.loc[:,colNameTest]>medianTime*threshold].index)
+        numTotal=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[-1]].index)
+        if numTotal>0:
+            delayPanel.iloc[10,-1,quarterHour]=numDelay/numTotal
+    #this sections compiles all trains for a given the morning and evening and quarter hour, ignoring weekday    
+    for evening in range(2):
+        for quarterHour in range(17):
+            testQH=testSet[lambda df:df.evening==evening][lambda df:df.secSince5>900*quarterHour][lambda df:df.secSince5<900*(quarterHour+1)]
+            for splitNum in range(len(splitList)-1):
+                numDelay=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[splitNum]][lambda df:df.loc[:,colNameInput]<splitList.iloc[splitNum+1]][lambda df:df.loc[:,colNameTest]>medianTime*threshold].index)
+                numTotal=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[splitNum]][lambda df:df.loc[:,colNameInput]<splitList.iloc[splitNum+1]].index)
+                if numTotal>0:
+                    delayPanel.iloc[11+evening,splitNum,quarterHour]=numDelay/numTotal
+            numDelay=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[-1]][lambda df:df.loc[:,colNameTest]>medianTime*threshold].index)
+            numTotal=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[-1]].index)
+            if numTotal>0:
+                delayPanel.iloc[11+evening,-1,quarterHour]=numDelay/numTotal
+    #this sections compiles all trains for a given weekday, morning and evening, and quarter hour
+    for weekday in range(5):
+        for evening in range(2):
+            for quarterHour in range(17):
+                testQH=testSet[lambda df:df.weekday==weekday][lambda df:df.evening==evening][lambda df:df.secSince5>900*quarterHour][lambda df:df.secSince5<900*(quarterHour+1)]
+                for splitNum in range(len(splitList)-1):
+                    numDelay=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[splitNum]][lambda df:df.loc[:,colNameInput]<splitList.iloc[splitNum+1]][lambda df:df.loc[:,colNameTest]>medianTime*threshold].index)
+                    numTotal=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[splitNum]][lambda df:df.loc[:,colNameInput]<splitList.iloc[splitNum+1]].index)
+                    if numTotal>0:
+                        delayPanel.iloc[2*weekday+evening,splitNum,quarterHour]=numDelay/numTotal
+                numDelay=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[-1]][lambda df:df.loc[:,colNameTest]>medianTime*threshold].index)
+                numTotal=len(testQH[lambda df:df.loc[:,colNameInput]>splitList.iloc[-1]].index)
+                if numTotal>0:
+                    delayPanel.iloc[2*weekday+evening,-1,quarterHour]=numDelay/numTotal
+    return delayPanel
+                    
 #these are the lines to examine. lowercase letters (w,e,n,s,c) are the ordinal directions and central. Uppercase letters (O,S,B,Y,G) and Red are the lines
 wOEnd=['K07','K06']
 wSEnd=['N04','N03','N02','N01']
