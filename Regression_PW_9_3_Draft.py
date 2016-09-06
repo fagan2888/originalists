@@ -25,6 +25,7 @@ x=datetime.today()
 
 y=x.replace(day=x.day+1, hour=1, minute=0, second=0, microsecond=0)
 
+Station_to_Station = pd.read_csv('C:\Users\pbw50\Desktop\station_to_station.csv', usecols=['CompositeMiles','Start Location','End Location','RailTime'])
 
 OrangelineSW = pd.read_csv('C:\Users\pbw50\Documents\data\metro\ORsurge2trainsSW.csv')
 RedlineNE = pd.read_csv('C:\Users\pbw50\Documents\data\metro\RDsurge34trainsNE.csv')
@@ -33,15 +34,16 @@ RedlineNE = pd.read_csv('C:\Users\pbw50\Documents\data\metro\RDsurge34trainsNE.c
 #dfSV = pd.read_csv('C:/Users\pbw50\Desktop\SVsurge34trainsNE (1).csv')
 #dfYL = pd.read_csv('C:/Users\pbw50\Desktop\YLsurge34trainsNE.csv')
 
+#print(RedlineNE.head())
+#print(Station_to_Station.head())
 
-#print(OrangelineSW.columns)
 
 RedlineNE.columns = ["Time_Start",'Line','Rockville', 'Twinbrook','White Flint',"Grosvenor-Strathmore",
                 "Medical Center","Bethesda",
                 "Friendship Heights","Tenleytown-AU","Van Ness-UDC","Cleveland Park","Woodley Park-Zoo/Adams Morgan",
-                "Dupont Circle","Farragut North","Metro Center","Gallery Pl-Chinatown","Judiciary Square","Union Station",
+                "Dupont Circle","Farragut North","Metro Center","Gallery Pl-Chinatown","Judiciary Square","Union Station","NOMA",
                 "Rhode Island Ave-Brentwood","Brookland-CUA","Fort Totten","Takoma","Silver Spring","Forest Glen","Wheaton",
-                "Glenmont"]
+                ]
              
 #dfOR.columns = ["Time_Start",'Line',"Vienna/Fairfax-GMU","Dunn Loring-Merrifield","West Falls Church-VT/UVA","East Falls Church",
 #                "Ballston-MU","Virginia Square-GMU","Clarendon","Court House","Rosslyn","Farragut West",
@@ -93,18 +95,20 @@ def f3(data):
     lis3=[]
     x=0
     if line=="RD":
-        x=25
+        x=26
     if line=="OR":
         x=18
     for i in range(2,x):  
         lis3.append(cols.loc[i,0])      
     return  lis3
+
+#print(f3(df))
 #Second Location
 def f4(data):
     lis4=[]
     x=0
     if line=="RD":
-        x=26
+        x=27
     if line=="OR":
         x=18
         print(x)
@@ -114,19 +118,11 @@ def f4(data):
     
 #print(f4(df))
 
-def f5(data):
-    lis6=[]
-    x=0
-    if line=="RD":
-        x=25
-    if line=="OR":
-        x=17
- 
-    for i in range(2,x):
-        lis6.append(abs(df.iloc[:,i]-df.iloc[:,i+2])/60)
-    return lis6
 
-#print(f5(df))
+#print(Station_to_Station.columns)
+
+    
+
 #Labels - the actual time it took to for a train to get from one stop to the next in order. 
 def label1(data):
     lis5=[]
@@ -138,7 +134,9 @@ def label1(data):
     for i in range(2,x):  
         lis5.append(df.iloc[:,i]-df.iloc[:,i+1])      
     return  lis5
-      
+
+
+  
 #Final Dataset  Translates seconds into minutes. #Removes all instances where the label falls 3 stadard 
 #deviations away from the norm. 
         
@@ -146,38 +144,42 @@ def final(data):
     feature1 = f1(df)
     feature2 = f2(df)
     feature3 = f3(df) 
-    feature4 = f4(df) 
-    feature5 = f5(df)
+    feature4 = f4(df)
+    
+#    feature5 = f5(df)
     lbl = label1(df)
   
     df0 = pd.DataFrame([])
     x=0
     if line=="RD":
-        x=23
+        x=24
 
     if line =="OR":
         x=15
     for i in range(0,x):        
-        d = {'feature1': feature1[0],'feature2': feature2[1],'feature3': feature3[i], 
-        'feature4': feature4[i+1], 'feature5': feature5[i],'label': abs(lbl[i])/60}    
+        d = {'Time': feature1[0],'Line': feature2[1],'Start Location': feature3[i], 
+        'End Location': feature4[i+1],'label': abs(lbl[i])/60}    
         df1=pd.DataFrame(d)        
         df0=df0.append(df1)
         df0.reset_index() 
-    return df0[(df0.feature2!='-')&(df0.label>0)&(np.abs(df0.label-df0.label.mean())<=3*df0.label.std())].round(2)
+    return df0[(df0.Line!='-')&(df0.label>0)&(np.abs(df0.label-df0.label.mean())<=3*df0.label.std())]
 
-#print(final(df))
+#print(final(df).head())
 #create label row for model fitting.
-final_data=pd.DataFrame(final(df).reset_index())  
-final_data.feature1 = final_data.feature1
+final_data1=pd.DataFrame(final(df).reset_index())  
+final_data = pd.merge(Station_to_Station[[0,2,3]],final_data1.ix[:,1:6], on=['Start Location', 'End Location'])
+#print(final_data.ix[:,0:5])
+#final_data.feature1 = final_data.feature1
 #print(final_data.feature1)
 
 
 #Data below will be used to join to the predicted results. 
-forjoin = final_data.ix[:,1:5]
-#print(forjoin.head())
-
+forjoin = pd.merge(Station_to_Station[[0,2,3,1]],final_data1.ix[:,1:5], on=['Start Location', 'End Location'])
+print(forjoin.head())
+#test = pd.merge(Station_to_Station[[1,4,0,5,3]], final_data.ix[:,1:6], on=['feature3', 'feature4'])
+#print(test.describe())
 #y=final_data.ix[:,-1]
-
+#test.to_excel('C:/Users/pbw50/Desktop/test.xlsx')
 #create features for model fitting. Translate categorical varibles to numbers.
 #X = pd.get_dummies(final_data.ix[:,1:5])
 
@@ -185,44 +187,49 @@ forjoin = final_data.ix[:,1:5]
 
 def Kfold(data):
     start  = time.time() # Start the clock! 
-    scores = {'R2 Linear Regressor':[], 'R2 SGD Regressor':[]}
+    scores = {'R2 Linear Regressor':[], 'R2 SGD Regressor':[], 'R2 Elastic Net':[], 'R2 Lasso':[]}
     for train, test in KFold(final_data.shape[0], n_folds=12, shuffle=True,random_state=1):
-        X_train, X_test = pd.get_dummies(final_data.ix[:,1:5]), pd.get_dummies(final_data.ix[:,1:5])
+        X_train, X_test = pd.get_dummies(final_data.ix[:,0:5]), pd.get_dummies(final_data.ix[:,0:5])
         y_train, y_test = final_data.ix[:,-1], final_data.ix[:,-1]
+        
+        #Linear Regression
         lin_reg = linear_model.LinearRegression(normalize='l1')
         lin_reg.fit(X_train,y_train)
-        
+                
+        #Stochastic Gradient 
         sgd_reg = linear_model.SGDRegressor(penalty='l1')
         sgd_reg.fit(X_train,y_train)
         
+        #Elastic Net
+        enet_reg = linear_model.ElasticNetCV()
+        enet_reg.fit(X_train,y_train)
+        
+        lass_reg = linear_model.LassoCV()
+        lass_reg.fit(X_train,y_train)
+             
         expected  = y_test
         predicted_linear_Regressor = lin_reg.predict(X_test)
         predicted_SGD_Regressor = sgd_reg.predict(X_test)
-#        print(X_train.shape)
-#        print(X_test.shape)
-#        
-         
-        
-#        scores['precision'].append(metrics.precision_score(expected, predicted, average="weighted"))
-#        scores['recall'].append(metrics.recall_score(expected, predicted, average="weighted"))
-#        scores['accuracy'].append(metrics.accuracy_score(expected, predicted))
-        scores['R2 Linear Regressor'].append(metrics.r2_score(expected, predicted_linear_Regressor ))
-        scores['R2 SGD Regressor'].append(metrics.r2_score(expected, predicted_SGD_Regressor ))
-        
-#    print(lin_reg.score(X_test, y_test).mean())
-#    print(predicted.mean())
-#    print(y_train)
-#    print(predicted[30])
-#    print(scores)
-    print "Build and Validation of {} took {:0.3f} seconds".format(final_data.ix[:,2:5], time.time()-start)
+        enet_prediction  = enet_reg.predict(X_test)
+        lass_prediction = lass_reg.predict(X_test)        
+
+        scores['R2 Linear Regressor'].append(metrics.r2_score(expected, predicted_linear_Regressor,multioutput='variance_weighted' ))
+        scores['R2 SGD Regressor'].append(metrics.r2_score(expected, predicted_SGD_Regressor,multioutput='variance_weighted' ))
+        scores['R2 Elastic Net'].append(metrics.r2_score(expected, enet_prediction ))
+        scores['R2 Lasso'].append(metrics.r2_score(expected, lass_prediction ,multioutput='variance_weighted' ))
+
+    print "Build and Validation of {} \ntook {:0.3f} seconds".format(final_data.ix[:,1:5], time.time()-start)
+    print('\n')
     print "Validation scores are as follows:\n"
     print pd.DataFrame(scores).mean()
-    print(expected[15])
-    print(predicted_linear_Regressor[15])  
+
     final_df = pd.DataFrame([])
     
     final_df["Linear Regr Predicted"]=predicted_linear_Regressor
     final_df["SGD Regr Predicted"]=predicted_SGD_Regressor
+    final_df["Elastic Net Predicted"]=enet_prediction
+    final_df['lasso Predicted']=lass_prediction
+    
     final_df["Actual"]=y_test
     result = pd.concat([forjoin, final_df], axis=1, join='inner')
     result.to_excel('C:/Users/pbw50/Desktop/RD.xlsx')
@@ -242,8 +249,7 @@ print(Kfold(final_data))
 #Create models.
 #lin_reg = linear_model.LinearRegression(normalize='l1')
 #sgd_reg = linear_model.SGDRegressor(penalty='l1')
-#enet_reg = linear_model.ElasticNet()
-#lass_reg = linear_model.Lasso(alpha=200)
+
 #
 ##Fit models.
 #lin_reg.fit(X_train,y_train)
@@ -306,13 +312,13 @@ print(Kfold(final_data))
 
 
 
-g = sns.factorplot(x="label", 
-                   y="feature4",
-                   hue="feature2",                   
-                   data=final_data,             
-                   size=8, kind="bar", palette="muted", color="orange")
-
-g.set_ylabels("Line")
+#g = sns.factorplot(x="label", 
+#                   y="feature4",
+#                   hue="feature2",                   
+#                   data=final_data,             
+#                   size=8, kind="bar", palette="muted", color="orange")
+#
+#g.set_ylabels("Line")
 #print(g)
 
 
